@@ -97,9 +97,9 @@ func _import(source_file: String, save_path: String, options: Dictionary, platfo
 	var result_mesh: Mesh
 	
 	if mesh_type == MeshType.SPMA:
-		result_mesh = _import_animated_mesh(file, has_normals, has_colors, has_tangents, materials)
+		result_mesh = _import_animated_mesh(file, has_normals, has_colors, has_tangents, materials, source_file)
 	elif mesh_type == MeshType.SPMN:
-		result_mesh = _import_normal_mesh(file, has_normals, has_colors, has_tangents, materials)
+		result_mesh = _import_normal_mesh(file, has_normals, has_colors, has_tangents, materials, source_file)
 	else:
 		printerr("Unsupported mesh type: ", mesh_type)
 		return ERR_FILE_UNRECOGNIZED
@@ -107,7 +107,7 @@ func _import(source_file: String, save_path: String, options: Dictionary, platfo
 	return ResourceSaver.save(result_mesh, "%s.%s" % [save_path, _get_save_extension()])
 
 
-func _import_normal_mesh(file: FileAccess, has_normals: bool, has_colors: bool, has_tangents: bool, materials: Array) -> ArrayMesh:
+func _import_normal_mesh(file: FileAccess, has_normals: bool, has_colors: bool, has_tangents: bool, materials: Array, source_file: String) -> ArrayMesh:
 	var mesh := ArrayMesh.new()
 	
 	# Read number of mesh sections
@@ -183,14 +183,20 @@ func _import_normal_mesh(file: FileAccess, has_normals: bool, has_colors: bool, 
 				st.add_index(i2)
 				st.add_index(i3)
 			
-			mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, st.commit_to_arrays())
+			var surface_arrays = st.commit_to_arrays()
+			mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, surface_arrays)
+			
+			# Create and apply material if valid material ID
+			if material_id < len(materials):
+				var mat = _create_material(materials[material_id], source_file)
+				mesh.surface_set_material(mesh.get_surface_count() - 1, mat)
 	
 	return mesh
 
 
-func _import_animated_mesh(file: FileAccess, has_normals: bool, has_colors: bool, has_tangents: bool, materials: Array) -> ArrayMesh:
+func _import_animated_mesh(file: FileAccess, has_normals: bool, has_colors: bool, has_tangents: bool, materials: Array, source_file: String) -> ArrayMesh:
 	# First import the normal mesh part
-	var mesh := _import_normal_mesh(file, has_normals, has_colors, has_tangents, materials)
+	var mesh := _import_normal_mesh(file, has_normals, has_colors, has_tangents, materials, source_file)
 	
 	# Read armature data
 	var armature_count := file.get_8()
@@ -316,3 +322,51 @@ func _half_to_float(half: int) -> float:
 			return NAN
 	
 	return sign * pow(2.0, exp - 15.0) * (1.0 + mant / 1024.0)
+
+
+# Create a material based on the SPM material data
+func _create_material(material_data: Dictionary, source_file: String) -> StandardMaterial3D:
+	var material := StandardMaterial3D.new()
+	
+	# Set up basic material properties
+	material.vertex_color_use_as_albedo = true
+	material.transparency = StandardMaterial3D.TRANSPARENCY_ALPHA_DEPTH_PRE_PASS
+	
+	# Get the directory of the source file
+	var source_dir = source_file.get_base_dir()
+	
+	# Load and assign the main texture if available
+	var texture1_path = material_data.get("texture1", "")
+	if texture1_path != "":
+		var texture = _load_texture(texture1_path, source_dir)
+		if texture:
+			material.albedo_texture = texture
+	
+	# Process second texture (normal map in STK)
+	var texture2_path = material_data.get("texture2", "")
+	if texture2_path != "":
+		var texture = _load_texture(texture2_path, source_dir)
+		if texture:
+			# In STK, second texture is often used as normal map
+			material.normal_enabled = true
+			material.normal_texture = texture
+	
+	return material
+
+
+# Helper function to load textures with various extensions
+func _load_texture(texture_path: String, base_dir: String) -> Texture2D:
+	var test_paths := [
+		"%s/%s" % [base_dir, texture_path],
+		"res://textures/%s" % [texture_path],
+	]
+
+	for path in test_paths:
+		print("Trying to load texture: ", path)
+		if ResourceLoader.exists(path):
+			var texture = ResourceLoader.load(path)
+			if texture:
+				return texture
+
+	push_error("Texture not found: ", texture_path)
+	return null
