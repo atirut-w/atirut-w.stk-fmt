@@ -2,11 +2,14 @@
 extends EditorPlugin
 
 
+var _spm_plugin : SPMImportPlugin
+
+
 func _enter_tree() -> void:
-	# Initialization of the plugin goes here.
-	pass
+	_spm_plugin = SPMImportPlugin.new()
+	add_import_plugin(_spm_plugin)
 
 
 func _exit_tree() -> void:
-	# Clean-up of the plugin goes here.
-	pass
+	remove_import_plugin(_spm_plugin)
+	_spm_plugin = null
