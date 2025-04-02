@@ -79,7 +79,7 @@ func _import(source_file: String, save_path: String, options: Dictionary, platfo
 	
 	# Read materials
 	var num_materials := file.get_16()
-	var materials := []
+	var materials: Array[Dictionary] = []
 	
 	for i in range(num_materials):
 		var texture1_len := file.get_8()
@@ -362,7 +362,6 @@ func _load_texture(texture_path: String, base_dir: String) -> Texture2D:
 	]
 
 	for path in test_paths:
-		print("Trying to load texture: ", path)
 		if ResourceLoader.exists(path):
 			var texture = ResourceLoader.load(path)
 			if texture:
