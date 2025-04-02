@@ -36,7 +36,24 @@ func _get_preset_name(preset: int) -> String:
 
 
 func _get_import_options(path: String, preset_index: int) -> Array[Dictionary]:
-	return [{}]
+	return [
+		{
+			"name": "unwrap_uv2",
+			"default_value": false,
+			"hint_string": "Unwrap UV2 coordinates for lightmap baking."
+		},
+		{
+			"name": "uv2_texel_size",
+			"default_value": 0.2,
+			"hint_string": "The size of a texel",
+		}
+	]
+
+
+func _get_option_visibility(path: String, option_name: StringName, options: Dictionary) -> bool:
+	if option_name == "uv2_texel_size":
+		return options.get("unwrap_uv2", false)
+	return true
 
 
 func _get_priority() -> float:
@@ -94,7 +111,7 @@ func _import(source_file: String, save_path: String, options: Dictionary, platfo
 		})
 	
 	# Create the result mesh
-	var result_mesh: Mesh
+	var result_mesh: ArrayMesh
 	
 	if mesh_type == MeshType.SPMA:
 		result_mesh = _import_animated_mesh(file, has_normals, has_colors, has_tangents, materials, source_file)
@@ -103,6 +120,9 @@ func _import(source_file: String, save_path: String, options: Dictionary, platfo
 	else:
 		printerr("Unsupported mesh type: ", mesh_type)
 		return ERR_FILE_UNRECOGNIZED
+
+	if options["unwrap_uv2"]:
+		result_mesh.lightmap_unwrap(Transform3D.IDENTITY, options["uv2_texel_size"])
 	
 	return ResourceSaver.save(result_mesh, "%s.%s" % [save_path, _get_save_extension()])
 
