@@ -327,31 +327,141 @@ func _half_to_float(half: int) -> float:
 # Create a material based on the SPM material data
 func _create_material(material_data: Dictionary, source_file: String) -> StandardMaterial3D:
 	var material := StandardMaterial3D.new()
-	
+
 	# Set up basic material properties
 	material.vertex_color_use_as_albedo = true
-	material.transparency = StandardMaterial3D.TRANSPARENCY_ALPHA_DEPTH_PRE_PASS
-	
+
 	# Get the directory of the source file
 	var source_dir = source_file.get_base_dir()
-	
+
+	# Check for materials.xml file in the same directory
+	var xml_path = source_dir.path_join("materials.xml")
+	var xml_material_props = {}
+
+	# If there's a materials.xml file, try to load material properties from it
+	if FileAccess.file_exists(xml_path):
+			var texture_name = material_data.get("texture1", "").get_file()
+			xml_material_props = _load_material_properties_from_xml(xml_path, texture_name)
+
 	# Load and assign the main texture if available
 	var texture1_path = material_data.get("texture1", "")
 	if texture1_path != "":
-		var texture = _load_texture(texture1_path, source_dir)
-		if texture:
-			material.albedo_texture = texture
-	
+			var texture = _load_texture(texture1_path, source_dir)
+			if texture:
+					material.albedo_texture = texture
+
 	# Process second texture (normal map in STK)
 	var texture2_path = material_data.get("texture2", "")
 	if texture2_path != "":
-		var texture = _load_texture(texture2_path, source_dir)
-		if texture:
-			# In STK, second texture is often used as normal map
-			material.normal_enabled = true
-			material.normal_texture = texture
-	
+			var texture = _load_texture(texture2_path, source_dir)
+			if texture:
+					# In STK, second texture is often used as normal map
+					material.normal_enabled = true
+					material.normal_texture = texture
+
+	# Apply material properties from materials.xml if available
+	if not xml_material_props.is_empty():
+			_apply_xml_material_properties(material, xml_material_props, source_dir)
+
 	return material
+
+
+# Load material properties from materials.xml file
+func _load_material_properties_from_xml(xml_path: String, material_name: String) -> Dictionary:
+	var material_props := {}
+	var xml := XMLParser.new()
+	var error := xml.open(xml_path)
+
+	if error != OK:
+			push_error("Failed to open materials.xml: ", error)
+			return material_props
+
+	# Track when we've found the matching material
+	var in_target_material := false
+
+	# Parse the XML
+	while xml.read() == OK:
+			var node_type := xml.get_node_type()
+
+			if node_type == XMLParser.NODE_ELEMENT:
+					var node_name := xml.get_node_name()
+
+					# Look for material nodes
+					if node_name == "material":
+							# Check if this is our target material
+							var found_name := false
+
+							# Check all attributes for name match
+							for i in range(xml.get_attribute_count()):
+									var attr_name := xml.get_attribute_name(i)
+									var attr_value := xml.get_attribute_value(i)
+
+									if attr_name == "name" and attr_value == material_name:
+											in_target_material = true
+											found_name = true
+
+									# Store all attributes of this material
+									if found_name:
+											material_props[attr_name] = attr_value
+
+					# If we're in the target material, store all properties
+					elif in_target_material:
+							for i in range(xml.get_attribute_count()):
+									var attr_name := xml.get_attribute_name(i)
+									var attr_value := xml.get_attribute_value(i)
+									material_props[attr_name] = attr_value
+
+			# Exit when we're done with the material
+			elif node_type == XMLParser.NODE_ELEMENT_END and xml.get_node_name() == "material" and in_target_material:
+					in_target_material = false
+					break
+
+	return material_props
+
+
+# Apply properties from materials.xml to a Godot material
+func _apply_xml_material_properties(material: StandardMaterial3D, props: Dictionary, source_dir: String) -> void:
+	# Handle shader types
+	if props.has("shader"):
+		var shader_type = props["shader"].to_lower()
+		match shader_type:
+			"alphatest":
+				material.transparency = StandardMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
+				# Default threshold if not specified
+				material.alpha_scissor_threshold = 0.5
+			"alphablend":
+				material.transparency = StandardMaterial3D.TRANSPARENCY_ALPHA
+			_:
+				push_error("Unknown shader type: ", shader_type)
+
+	# Handle alpha test value if specified
+	if props.has("alphatest") and float(props["alphatest"]) > 0:
+		material.transparency = StandardMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
+		material.alpha_scissor_threshold = float(props["alphatest"])
+
+	# Handle backface culling
+	if props.has("backface-culling"):
+		var culling = props["backface-culling"].to_upper()
+		material.cull_mode = BaseMaterial3D.CULL_BACK if culling == "Y" else BaseMaterial3D.CULL_DISABLED
+
+	# Handle z-write
+	if props.has("disable-z-write") and props["disable-z-write"].to_upper() == "Y":
+		material.depth_draw_mode = BaseMaterial3D.DEPTH_DRAW_OPAQUE_ONLY
+
+	# Handle friction (not directly mappable, but might affect roughness)
+	if props.has("friction"):
+		var friction = float(props["friction"])
+		# Lower friction -> more smooth/glossy
+		material.roughness = clampf(1.0 - friction, 0.0, 1.0)
+
+	# Gloss map
+	if props.has("gloss-map"):
+		var gloss_map_path = props["gloss-map"]
+		# TODO: Convert to roughness map?
+		var texture = _load_texture(gloss_map_path, source_dir)
+		if texture:
+			material.roughness_texture = texture
+			material.roughness_texture_channel = BaseMaterial3D.TEXTURE_CHANNEL_RED
 
 
 # Helper function to load textures with various extensions
