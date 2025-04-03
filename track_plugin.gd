@@ -1,51 +1,17 @@
 class_name TrackImportPlugin
-extends EditorImportPlugin
+extends EditorSceneFormatImporter
 
-func _get_importer_name() -> String:
-	return "atirut-w.track_plugin"
-
-
-func _get_visible_name() -> String:
-	return "STK Scene"
-
-
-func _get_recognized_extensions() -> PackedStringArray:
+func _get_extensions() -> PackedStringArray:
 	return ["xml"]
 
+func _get_import_flags() -> int:
+	return IMPORT_SCENE
 
-func _get_save_extension() -> String:
-	return "tscn"
-
-
-func _get_resource_type() -> String:
-	return "PackedScene"
-
-
-func _get_preset_count() -> int:
-	return 1
-
-
-func _get_preset_name(preset: int) -> String:
-	return "Default"
-
-
-func _get_import_options(path: String, preset_index: int) -> Array[Dictionary]:
-	return [{}]
-
-
-func _get_priority() -> float:
-	return 100.0
-
-
-func _get_import_order() -> int:
-	return 0
-
-
-func _import(source_file: String, save_path: String, options: Dictionary, platform_variants: Array[String], gen_files: Array[String]) -> Error:
+func _import_scene(source_file: String, flags: int, options: Dictionary) -> Object:
 	# Only import files named scene.xml
 	if source_file.get_file() != "scene.xml":
 		printerr("Only scene.xml files can be imported with this importer")
-		return ERR_FILE_UNRECOGNIZED
+		return null
 	
 	# Parse track directory from source_file path
 	var track_dir = source_file.get_base_dir()
@@ -54,7 +20,7 @@ func _import(source_file: String, save_path: String, options: Dictionary, platfo
 	var scene_data = _parse_scene_xml(source_file)
 	if not scene_data:
 		printerr("Failed to parse scene.xml")
-		return ERR_FILE_CORRUPT
+		return null
 	
 	# Parse track.xml if it exists (for environment settings)
 	var track_data = {}
@@ -100,13 +66,7 @@ func _import(source_file: String, save_path: String, options: Dictionary, platfo
 	# Import the main track model and objects from scene.xml
 	_import_scene_objects(track_scene, scene_data, track_dir, materials_data)
 	
-	# Save the scene
-	var packed_scene = PackedScene.new()
-	var result = packed_scene.pack(track_scene)
-	if result != OK:
-		return result
-	
-	return ResourceSaver.save(packed_scene, "%s.%s" % [save_path, _get_save_extension()])
+	return track_scene
 
 
 func _parse_track_xml(path: String) -> Dictionary:
