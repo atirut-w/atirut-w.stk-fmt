@@ -353,35 +353,89 @@ func _create_material(material_data: Dictionary, source_file: String) -> Standar
 
 	# Get the directory of the source file
 	var source_dir = source_file.get_base_dir()
-
-	# Check for materials.xml file in the same directory
-	var xml_path = source_dir.path_join("materials.xml")
-	var xml_material_props = {}
-
-	# If there's a materials.xml file, try to load material properties from it
-	if FileAccess.file_exists(xml_path):
-			var texture_name = material_data.get("texture1", "").get_file()
-			xml_material_props = _load_material_properties_from_xml(xml_path, texture_name)
-
-	# Load and assign the main texture if available
+	
+	# Extract the texture names
 	var texture1_path = material_data.get("texture1", "")
-	if texture1_path != "":
-			var texture = _load_texture(texture1_path, source_dir)
-			if texture:
-					material.albedo_texture = texture
-
-	# Process second texture (normal map in STK)
 	var texture2_path = material_data.get("texture2", "")
+	var texture1_name = texture1_path.get_file()
+	var texture2_name = texture2_path.get_file()
+	
+	# XML material properties (to be filled later)
+	var xml_material_props = {}
+	
+	# Search priority for materials.xml:
+	# 1. Track directory (where the .spm file is)
+	# 2. res://textures/materials.xml (Godot project global file)
+	# 3. SuperTuxKart-1.4-linux-x86_64/data/textures/materials.xml (STK global file)
+	var track_xml_path = source_dir.path_join("materials.xml")
+	var global_xml_path = ""
+	
+	# Check if global materials.xml exists in the Godot project
+	var godot_global_xml = "res://textures/materials.xml"
+	if ResourceLoader.exists(godot_global_xml):
+		global_xml_path = ProjectSettings.globalize_path(godot_global_xml)
+	
+	# If not found, try to find the SuperTuxKart soft link
+	if global_xml_path.is_empty() or !FileAccess.file_exists(global_xml_path):
+		var addon_dir = source_dir
+		while !addon_dir.ends_with("addons") and addon_dir != addon_dir.get_base_dir():
+			addon_dir = addon_dir.get_base_dir()
+		
+		if addon_dir.ends_with("addons"):
+			var stk_dir = addon_dir.path_join("atirut-w.stk-fmt/SuperTuxKart-1.4-linux-x86_64") 
+			if DirAccess.dir_exists_absolute(stk_dir):
+				global_xml_path = stk_dir.path_join("data/textures/materials.xml")
+	
+	# First check track-specific materials.xml
+	if FileAccess.file_exists(track_xml_path) and !texture1_name.is_empty():
+		var track_props = _load_material_properties_from_xml(track_xml_path, texture1_name)
+		if !track_props.is_empty():
+			xml_material_props = track_props
+		
+	# If not found in track materials.xml, check global materials.xml
+	if xml_material_props.is_empty() and FileAccess.file_exists(global_xml_path) and !texture1_name.is_empty():
+		var global_props = _load_material_properties_from_xml(global_xml_path, texture1_name)
+		if !global_props.is_empty():
+			xml_material_props = global_props
+	
+	# Determine texture search paths
+	var texture_search_paths = [
+		source_dir, # First look in the track directory
+		source_dir.path_join("textures"), # Then look in textures subdirectory
+	]
+	
+	# Add Godot's project textures directory
+	var project_textures_dir = ProjectSettings.globalize_path("res://textures")
+	if DirAccess.dir_exists_absolute(project_textures_dir):
+		texture_search_paths.append(project_textures_dir)
+	
+	# Add STK textures directory if available
+	if FileAccess.file_exists(global_xml_path):
+		var textures_dir = global_xml_path.get_base_dir()
+		texture_search_paths.append(textures_dir)
+	
+	# Load and assign the main texture if available
+	if texture1_path != "":
+		var texture = _load_texture(texture1_path, texture_search_paths)
+		if texture:
+			material.albedo_texture = texture
+
+	# Process second texture
 	if texture2_path != "":
-			var texture = _load_texture(texture2_path, source_dir)
-			if texture:
-					# In STK, second texture is often used as normal map
-					material.normal_enabled = true
-					material.normal_texture = texture
+		var texture = _load_texture(texture2_path, texture_search_paths)
+		if texture:
+			# Check if this is a normal map according to materials.xml
+			if xml_material_props.has("normal-map") and xml_material_props["normal-map"] == texture2_name:
+				material.normal_enabled = true
+				material.normal_texture = texture
+			else:
+				# In STK, second texture is often used as normal map if not specified
+				material.normal_enabled = true
+				material.normal_texture = texture
 
 	# Apply material properties from materials.xml if available
 	if not xml_material_props.is_empty():
-			_apply_xml_material_properties(material, xml_material_props, source_dir)
+		_apply_xml_material_properties(material, xml_material_props, texture_search_paths)
 
 	return material
 
@@ -393,109 +447,114 @@ func _load_material_properties_from_xml(xml_path: String, material_name: String)
 	var error := xml.open(xml_path)
 
 	if error != OK:
-			push_error("Failed to open materials.xml: ", error)
-			return material_props
-
+		push_error("Failed to open materials.xml: ", error)
+		return material_props
+	
 	# Track when we've found the matching material
 	var in_target_material := false
+	var current_material_name := ""
+	
+	# Get just the filename part if it's a path
+	var material_filename := material_name.get_file()
+	if material_filename.is_empty():
+		material_filename = material_name
 
 	# Parse the XML
 	while xml.read() == OK:
-			var node_type := xml.get_node_type()
+		var node_type := xml.get_node_type()
 
-			if node_type == XMLParser.NODE_ELEMENT:
-					var node_name := xml.get_node_name()
+		if node_type == XMLParser.NODE_ELEMENT:
+			var node_name := xml.get_node_name()
 
-					# Look for material nodes
-					if node_name == "material":
-							# Check if this is our target material
-							var found_name := false
+			# Look for material nodes
+			if node_name == "material":
+				# Reset material state
+				current_material_name = ""
+				in_target_material = false
+				
+				# Check all attributes for name match
+				for i in range(xml.get_attribute_count()):
+					var attr_name := xml.get_attribute_name(i)
+					var attr_value := xml.get_attribute_value(i)
 
-							# Check all attributes for name match
-							for i in range(xml.get_attribute_count()):
-									var attr_name := xml.get_attribute_name(i)
-									var attr_value := xml.get_attribute_value(i)
+					if attr_name == "name":
+						current_material_name = attr_value
+						var current_filename := current_material_name.get_file()
+						if current_filename.is_empty():
+							current_filename = current_material_name
+						
+						# Try exact match first, then filename-only match
+						if current_material_name == material_name || current_filename == material_filename:
+							in_target_material = true
+					
+					# Only store the attribute if we're in the target material and we've confirmed the name match
+					if in_target_material:
+						material_props[attr_name] = attr_value
+			
+			# Child elements like <sfx>, <zipper>, <particles>, etc.
+			elif in_target_material:
+				# Store the element type (will be overwritten by attributes)
+				material_props[node_name] = "yes"
+				
+				# Store any attributes of child elements
+				for i in range(xml.get_attribute_count()):
+					var attr_name := xml.get_attribute_name(i)
+					var attr_value := xml.get_attribute_value(i)
+					var prefixed_name = node_name + "-" + attr_name
+					material_props[prefixed_name] = attr_value
 
-									if attr_name == "name" and attr_value == material_name:
-											in_target_material = true
-											found_name = true
-
-									# Store all attributes of this material
-									if found_name:
-											material_props[attr_name] = attr_value
-
-					# If we're in the target material, store all properties
-					elif in_target_material:
-							for i in range(xml.get_attribute_count()):
-									var attr_name := xml.get_attribute_name(i)
-									var attr_value := xml.get_attribute_value(i)
-									material_props[attr_name] = attr_value
-
-			# Exit when we're done with the material
-			elif node_type == XMLParser.NODE_ELEMENT_END and xml.get_node_name() == "material" and in_target_material:
-					in_target_material = false
-					break
-
+		# Exit when we're done with the material
+		elif node_type == XMLParser.NODE_ELEMENT_END and xml.get_node_name() == "material" and in_target_material:
+			in_target_material = false
+			break
+		
 	return material_props
 
 
 # Apply properties from materials.xml to a Godot material
-func _apply_xml_material_properties(material: StandardMaterial3D, props: Dictionary, source_dir: String) -> void:
+func _apply_xml_material_properties(material: StandardMaterial3D, props: Dictionary, search_dirs: Array) -> void:
 	# Handle shader types
 	if props.has("shader"):
 		var shader_type = props["shader"].to_lower()
 		match shader_type:
 			"alphatest":
 				material.transparency = StandardMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
-				# Default threshold if not specified
 				material.alpha_scissor_threshold = 0.5
 			"alphablend":
 				material.transparency = StandardMaterial3D.TRANSPARENCY_ALPHA
+			"additive":
+				material.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+			"unlit":
+				material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 			_:
-				push_error("Unknown shader type: ", shader_type)
-
-	# Handle alpha test value if specified
-	if props.has("alphatest") and float(props["alphatest"]) > 0:
-		material.transparency = StandardMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
-		material.alpha_scissor_threshold = float(props["alphatest"])
-
-	# Handle backface culling
-	if props.has("backface-culling"):
-		var culling = props["backface-culling"].to_upper()
-		material.cull_mode = BaseMaterial3D.CULL_BACK if culling == "Y" else BaseMaterial3D.CULL_DISABLED
-
-	# Handle z-write
-	if props.has("disable-z-write") and props["disable-z-write"].to_upper() == "Y":
-		material.depth_draw_mode = BaseMaterial3D.DEPTH_DRAW_OPAQUE_ONLY
-
-	# Handle friction (not directly mappable, but might affect roughness)
-	if props.has("friction"):
-		var friction = float(props["friction"])
-		# Lower friction -> more smooth/glossy
-		material.roughness = clampf(1.0 - friction, 0.0, 1.0)
-
-	# Gloss map
-	if props.has("gloss-map"):
-		var gloss_map_path = props["gloss-map"]
-		# TODO: Convert to roughness map?
-		var texture = _load_texture(gloss_map_path, source_dir)
-		if texture:
-			material.roughness_texture = texture
-			material.roughness_texture_channel = BaseMaterial3D.TEXTURE_CHANNEL_RED
+				push_warning("Unknown shader type: %s" % shader_type)
 
 
-# Helper function to load textures with various extensions
-func _load_texture(texture_path: String, base_dir: String) -> Texture2D:
-	var test_paths := [
-		"%s/%s" % [base_dir, texture_path],
-		"res://textures/%s" % [texture_path],
-	]
-
-	for path in test_paths:
-		if ResourceLoader.exists(path):
-			var texture = ResourceLoader.load(path)
-			if texture:
+# Helper function to load textures
+func _load_texture(texture_path: String, search_dirs: Array) -> Texture2D:
+	var texture_file = texture_path.get_file()
+	
+	for base_dir in search_dirs:
+		# First try the exact path as provided
+		var full_path = base_dir.path_join(texture_path)
+		if ResourceLoader.exists(full_path):
+			var texture = ResourceLoader.load(full_path)
+			if texture is Texture2D:
 				return texture
+		
+		# Then try with just the filename in each search dir
+		full_path = base_dir.path_join(texture_file)
+		if ResourceLoader.exists(full_path):
+			var texture = ResourceLoader.load(full_path)
+			if texture is Texture2D:
+				return texture
+	
+	# Also try Godot's resource path
+	var res_path = "res://textures/%s" % [texture_file]
+	if ResourceLoader.exists(res_path):
+		var texture = ResourceLoader.load(res_path)
+		if texture is Texture2D:
+			return texture
 
-	push_error("Texture not found: ", texture_path)
+	push_warning("Texture not found: %s" % texture_path)
 	return null
